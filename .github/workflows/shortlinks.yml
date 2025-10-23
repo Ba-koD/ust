@@ -1,0 +1,656 @@
+name: Shortlink Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Destination URL"
+        required: true
+      desired_slug:
+        description: "Optional reserved slug"
+        required: false
+      slug_len:
+        description: "Slug length for random generation"
+        required: false
+      custom_domain:
+        description: "Custom domain for Pages (also writes CNAME and data/domain.json)"
+        required: false
+      cleanup_issue_number:
+        description: "Remove links for this issue number (manual cleanup)"
+        required: false
+  issues:
+    types: [ opened, deleted ]
+  issue_comment:
+    types: [ created ]
+  pull_request:
+    branches: [ pages ]
+    types: [ opened, synchronize, closed ]
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  pages: write
+  id-token: write
+
+jobs:
+  write_repo_meta:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      PAGES_BRANCH: pages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Write repo metadata
+        run: |
+          git fetch origin || true
+          git checkout -B "$PAGES_BRANCH"
+          mkdir -p data
+          printf '{\n  "repo": "%s"\n}\n' "$GITHUB_REPOSITORY" > data/repo.json
+          if [ -f CNAME ] && [ -s CNAME ]; then
+            DOMAIN=$(tr -d '\r\n' < CNAME)
+            printf '{\n  "domain": "%s"\n}\n' "$DOMAIN" > data/domain.json
+          fi
+          if [ -n "${{ inputs.custom_domain }}" ]; then
+            echo "${{ inputs.custom_domain }}" > CNAME
+            printf '{\n  "domain": "%s"\n}\n' "${{ inputs.custom_domain }}" > data/domain.json
+          fi
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Always refresh repo.json to ensure UI can create issues
+          mkdir -p data
+          printf '{\n  "repo": "%s"\n}\n' "$GITHUB_REPOSITORY" > data/repo.json
+          git add data/repo.json data/domain.json CNAME || true
+          git diff --cached --quiet || git commit -m "chore(meta): update repo.json [skip ci]"
+          git fetch origin "$PAGES_BRANCH" || true
+          git pull --rebase --autostash origin "$PAGES_BRANCH" || true
+          for i in 1 2 3; do
+            git push -u origin "$PAGES_BRANCH" && break || {
+              echo "push failed, attempting rebase retry $i";
+              git fetch origin "$PAGES_BRANCH" || true;
+              git pull --rebase --autostash origin "$PAGES_BRANCH" || true;
+            };
+          done
+  create_or_validate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      SLUG_LEN: ${{ inputs.slug_len }}
+      PAGES_BRANCH: pages
+      DATA_BRANCH: pages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Switch to pages branch
+        run: |
+          git fetch origin || true
+          git checkout -B "$PAGES_BRANCH" || git checkout -B "$PAGES_BRANCH"
+          # Ensure workspace matches remote pages before modifying files
+          git fetch origin "$PAGES_BRANCH" || true
+          git rev-parse --verify origin/"$PAGES_BRANCH" >/dev/null 2>&1 && git reset --hard origin/"$PAGES_BRANCH" || true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: Create shortlink entry
+        shell: bash
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+
+          const dataPath = path.join(process.cwd(), 'data', 'links.json');
+          const banPath = path.join(process.cwd(), 'data', 'banned.json');
+          const raw = fs.readFileSync(dataPath, 'utf8');
+          const state = JSON.parse(raw);
+          const ban = fs.existsSync(banPath) ? JSON.parse(fs.readFileSync(banPath, 'utf8')) : { urls: [], hosts: [] };
+
+          const base62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+          const exclude = new Set(['O','0','I','l']);
+          const alphabet = [...base62].filter(ch => !exclude.has(ch)).join('');
+
+          function genSlug(len) {
+            console.log('[slug] generating length:', len);
+            let s = '';
+            const bytes = crypto.randomBytes(len);
+            for (let i = 0; i < len; i++) {
+              s += alphabet[bytes[i] % alphabet.length];
+            }
+            return s;
+          }
+
+          function isValidSlug(s) {
+            return /^[a-zA-Z0-9-_]+$/.test(s);
+          }
+
+          const url = process.env['INPUT_URL'];
+          function isBanned(u) {
+            try {
+              const x = new URL(u);
+              const host = String(x.hostname || '').toLowerCase();
+              const urls = Array.isArray(ban.urls) ? ban.urls : [];
+              const hosts = Array.isArray(ban.hosts) ? ban.hosts : [];
+              if (urls.includes(u)) return true;
+              return hosts.some(h => h && host.endsWith(String(h).toLowerCase()));
+            } catch { return false; }
+          }
+          const desired = process.env['INPUT_DESIRED_SLUG'];
+          const lenRaw = process.env['SLUG_LEN'];
+          const defaultLen = Number.isFinite(parseInt(lenRaw, 10)) ? parseInt(lenRaw, 10) : 6;
+          console.log('[input] url:', url, 'desired_slug:', desired, 'len:', defaultLen);
+
+          if (!url || !/^https?:\/\//i.test(String(url))) {
+            throw new Error('Invalid URL input');
+          }
+          if (isBanned(url)) {
+            throw new Error('URL/host banned');
+          }
+
+          const links = Array.isArray(state.links) ? state.links : [];
+          const existing = new Set(links.map(e => String(e.slug)));
+          const duplicate = links.some(e => String(e.url) === String(url));
+          if (duplicate) {
+            throw new Error('Duplicate URL');
+          }
+
+          let slug = String(desired || '');
+          if (slug) {
+            if (!isValidSlug(slug)) throw new Error('Invalid slug format');
+            if (existing.has(slug)) throw new Error('Slug already exists');
+          } else {
+            do { slug = genSlug(defaultLen); } while (existing.has(slug));
+          }
+
+          const entry = {
+            slug,
+            url: String(url),
+            reserved: Boolean(desired),
+            createdAt: new Date().toISOString(),
+            createdBy: process.env['GITHUB_ACTOR'] || 'bot'
+          };
+
+          links.push(entry);
+          state.links = links;
+          fs.writeFileSync(dataPath, JSON.stringify(state, null, 2) + '\n', 'utf8');
+          console.log('[write] added:', slug, '->', url, 'total:', links.length);
+          NODE
+
+      - name: Commit and push (fast path, no deploy)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Ensure repo.json is present for UI even if missing/empty previously
+          mkdir -p data
+          printf '{\n  "repo": "%s"\n}\n' "$GITHUB_REPOSITORY" > data/repo.json
+          git add data/links.json data/repo.json
+          git commit -m "chore(shortlink): update links [skip ci]" || echo "No changes"
+          git fetch origin "$PAGES_BRANCH" || true
+          git pull --rebase --autostash origin "$PAGES_BRANCH" || true
+          for i in 1 2 3; do
+            git push -u origin "$PAGES_BRANCH" && break || {
+              echo "push failed, attempting rebase retry $i";
+              git fetch origin "$PAGES_BRANCH" || true;
+              git pull --rebase --autostash origin "$PAGES_BRANCH" || true;
+            };
+          done
+
+  validate_pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate changes
+        shell: bash
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const dataPath = path.join(process.cwd(), 'data', 'links.json');
+          const raw = fs.readFileSync(dataPath, 'utf8');
+          const state = JSON.parse(raw);
+          const links = Array.isArray(state.links) ? state.links : [];
+          const seen = new Set();
+          for (const e of links) {
+            const s = String(e.slug || '');
+            const u = String(e.url || '');
+            if (!/^[a-zA-Z0-9-_]+$/.test(s)) throw new Error('Invalid slug: ' + s);
+            if (!/^https?:\/\//i.test(u)) throw new Error('Invalid url: ' + u);
+            if (seen.has(s)) throw new Error('Duplicate slug: ' + s);
+            seen.add(s);
+          }
+          console.log('[validate] ok. total:', links.length);
+          NODE
+
+  create_from_issue:
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    env:
+      PAGES_BRANCH: pages
+      DATA_BRANCH: pages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Switch to pages branch
+        run: |
+          git fetch origin || true
+          git checkout -B "$PAGES_BRANCH" || git checkout -B "$PAGES_BRANCH"
+          git fetch origin "$PAGES_BRANCH" || true
+          git rev-parse --verify origin/"$PAGES_BRANCH" >/dev/null 2>&1 && git reset --hard origin/"$PAGES_BRANCH" || true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+      - name: Parse issue and create shortlink
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const https = require('https');
+          const title = process.env.ISSUE_TITLE || '';
+          const body = process.env.ISSUE_BODY || '';
+          const issueNumber = Number(process.env.ISSUE_NUMBER || '0');
+          const repoFull = String(process.env.REPO || '');
+          const token = String(process.env.TOKEN || '');
+          const [owner, repo] = repoFull.split('/');
+
+          async function gh(method, pathname, data) {
+            const payload = data ? Buffer.from(JSON.stringify(data)) : null;
+            const opts = {
+              method,
+              hostname: 'api.github.com',
+              path: pathname,
+              headers: {
+                'authorization': `Bearer ${token}`,
+                'user-agent': 'ushort-action',
+                'accept': 'application/vnd.github+json',
+                ...(payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : {})
+              }
+            };
+            return new Promise((resolve, reject) => {
+              const req = https.request(opts, res => {
+                const chunks = [];
+                res.on('data', c => chunks.push(c));
+                res.on('end', () => {
+                  const txt = Buffer.concat(chunks).toString('utf8');
+                  try { resolve({ status: res.statusCode, json: txt ? JSON.parse(txt) : {} }); } catch { resolve({ status: res.statusCode, json: {} }); }
+                });
+              });
+              req.on('error', reject);
+              if (payload) req.write(payload);
+              req.end();
+            });
+          }
+
+          async function comment(msg) { await gh('POST', `/repos/${owner}/${repo}/issues/${issueNumber}/comments`, { body: msg }); }
+          async function closeIssue() { await gh('PATCH', `/repos/${owner}/${repo}/issues/${issueNumber}`, { state: 'closed' }); }
+
+          function pick(re, text) { const m = text.match(re); return m ? m[1].trim() : ''; }
+          const url = pick(/URL:\s*(https?:[^\n\r]+)/i, body);
+          let desired = pick(/SLUG:\s*([A-Za-z0-9-_]+)/i, body);
+          const isReserved = /(^|\n)\s*SLUG:\s*/i.test(body);
+          const allowFallback = false;
+          if (!url) { throw new Error('Issue body must include URL: https://...'); }
+
+          const dataPath = path.join(process.cwd(), 'data', 'links.json');
+          const banPath = path.join(process.cwd(), 'data', 'banned.json');
+          const state = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+          const ban = fs.existsSync(banPath) ? JSON.parse(fs.readFileSync(banPath, 'utf8')) : { urls: [], hosts: [] };
+          const base62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+          const exclude = new Set(['O','0','I','l']);
+          const alphabet = [...base62].filter(ch => !exclude.has(ch)).join('');
+          function genSlug(len) { let s = ''; const bytes = crypto.randomBytes(len); for (let i = 0; i < len; i++) s += alphabet[bytes[i] % alphabet.length]; return s; }
+          const links = Array.isArray(state.links) ? state.links : [];
+          function isBanned(u) {
+            try {
+              const x = new URL(u);
+              const host = String(x.hostname || '').toLowerCase();
+              const urls = Array.isArray(ban.urls) ? ban.urls : [];
+              const hosts = Array.isArray(ban.hosts) ? ban.hosts : [];
+              if (urls.includes(u)) return true;
+              return hosts.some(h => h && host.endsWith(String(h).toLowerCase()));
+            } catch { return false; }
+          }
+          if (isBanned(url)) {
+            throw new Error('URL/host banned');
+          }
+          const duplicate = links.some(e => String(e.url) === String(url));
+          if (duplicate) {
+            throw new Error('Duplicate URL');
+          }
+          const existing = new Set(links.map(e => String(e.slug)));
+
+          (async () => {
+            if (isReserved) {
+              if (!desired) {
+                await comment(`Reserved request detected, but SLUG is missing or invalid. Please add:\nSLUG: your-slug`);
+                return;
+              }
+              await comment(`Reserved request received. Awaiting maintainer approval.\n\nURL: ${url}\nSLUG: ${desired}`);
+              return;
+            }
+            let slug = '';
+            do { slug = genSlug(6); } while (existing.has(slug));
+            links.push({ slug, url, reserved: false, createdAt: new Date().toISOString(), createdBy: process.env.ACTOR || 'bot', issueNumber: Number(process.env.ISSUE_NUMBER || '0') });
+            state.links = links;
+            fs.writeFileSync(dataPath, JSON.stringify(state, null, 2) + '\n');
+            console.log('[issue] added random:', slug, '->', url);
+            const domPath = path.join(process.cwd(), 'data', 'domain.json');
+            let host = '';
+            try { if (fs.existsSync(domPath)) { const dj = JSON.parse(fs.readFileSync(domPath, 'utf8')); host = String((dj && dj.domain) || '').trim(); } } catch {}
+            if (!host) {
+              try {
+                const ref = process.env.PAGES_BRANCH || 'pages';
+                const r = await gh('GET', `/repos/${owner}/${repo}/contents/CNAME?ref=${encodeURIComponent(ref)}`);
+                if (r && r.json && r.json.content) {
+                  const raw = Buffer.from(String(r.json.content), 'base64').toString('utf8').trim();
+                  if (raw) host = raw;
+                }
+              } catch {}
+            }
+            if (!host) { host = `${owner}.github.io`; }
+            const shortUrl = `https://${host.replace(/\/$/, '')}/${slug}`;
+            await comment(`Created shortlink: ${shortUrl} → ${url}`);
+            await closeIssue();
+          })().catch(err => { console.error('[issue] flow error:', err); process.exit(1); });
+          NODE
+      - name: Commit and push (fast path, no deploy)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p data
+          printf '{\n  "repo": "%s"\n}\n' "$GITHUB_REPOSITORY" > data/repo.json
+          git add data/links.json data/repo.json
+          git commit -m "chore(shortlink): add from issue [skip ci]" || echo "No changes"
+          git fetch origin "$PAGES_BRANCH" || true
+          git pull --rebase --autostash origin "$PAGES_BRANCH" || true
+          for i in 1 2 3; do
+            git push -u origin "$PAGES_BRANCH" && break || {
+              echo "push failed, attempting rebase retry $i";
+              git fetch origin "$PAGES_BRANCH" || true;
+              git pull --rebase --autostash origin "$PAGES_BRANCH" || true;
+            };
+          done
+  approve_by_comment:
+    if: github.event_name == 'issue_comment' && !github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    env:
+      PAGES_BRANCH: pages
+      DATA_BRANCH: pages
+    steps:
+      - name: Check comment for approval keyword
+        env:
+          BODY: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          if echo "$BODY" | grep -i -q 'Approved'; then
+            echo "OK" > /tmp/approved
+          fi
+          test -f /tmp/approved
+
+      - name: Verify approver permission
+        env:
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          const https = require('https');
+          const repoFull = String(process.env.REPO || '');
+          const actor = String(process.env.ACTOR || '');
+          const issueNumber = String(process.env.ISSUE_NUMBER || '');
+          const token = String(process.env.TOKEN || '');
+          const [owner, repo] = repoFull.split('/');
+          function gh(method, path, data) {
+            const payload = data ? Buffer.from(JSON.stringify(data)) : null;
+            return new Promise((resolve, reject) => {
+              const req = https.request({ method, hostname: 'api.github.com', path, headers: { 'authorization': `Bearer ${token}`, 'user-agent': 'ushort-guard', 'accept': 'application/vnd.github+json', ...(payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : {}) } }, res => {
+                const chunks = [];
+                res.on('data', c => chunks.push(c));
+                res.on('end', () => { const txt = Buffer.concat(chunks).toString('utf8'); try { resolve({ status: res.statusCode, json: txt ? JSON.parse(txt) : {} }); } catch { resolve({ status: res.statusCode, json: {} }); } });
+              });
+              req.on('error', reject); if (payload) req.write(payload); req.end();
+            });
+          }
+          (async () => {
+            const r = await gh('GET', `/repos/${owner}/${repo}/collaborators/${actor}/permission`);
+            const perm = (r.json && r.json.permission) || '';
+            const allowed = ['admin','write','maintain'].includes(String(perm));
+            if (!allowed) {
+              await gh('POST', `/repos/${owner}/${repo}/issues/${issueNumber}/comments`, { body: `Approval ignored: @${actor} has insufficient permission (${perm}).` });
+              console.log('[guard] blocked approver:', actor, 'perm:', perm);
+              process.exit(1);
+            } else {
+              console.log('[guard] approver ok:', actor, 'perm:', perm);
+            }
+          })().catch(err => { console.error('[guard] error', err); process.exit(1); });
+          NODE
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Switch to pages branch
+        run: |
+          git fetch origin || true
+          git checkout -B "$PAGES_BRANCH" || git checkout -B "$PAGES_BRANCH"
+          git fetch origin "$PAGES_BRANCH" || true
+          git rev-parse --verify origin/"$PAGES_BRANCH" >/dev/null 2>&1 && git reset --hard origin/"$PAGES_BRANCH" || true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+      - name: Approve via comment and create shortlink
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          (async () => {
+            const fs = require('fs');
+            const path = require('path');
+            const crypto = require('crypto');
+            const https = require('https');
+            const title = process.env.ISSUE_TITLE || '';
+            const body = process.env.ISSUE_BODY || '';
+            const issueNumber = Number(process.env.ISSUE_NUMBER || '0');
+            const repoFull = String(process.env.REPO || '');
+            const token = String(process.env.TOKEN || '');
+            const [owner, repo] = repoFull.split('/');
+            async function gh(method, pathname, data) {
+              const payload = data ? Buffer.from(JSON.stringify(data)) : null;
+              const opts = { method, hostname: 'api.github.com', path: pathname, headers: { 'authorization': `Bearer ${token}`, 'user-agent': 'ushort-action', 'accept': 'application/vnd.github+json', ...(payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : {}) } };
+              return new Promise((resolve, reject) => {
+                const req = https.request(opts, res => { const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => { const txt = Buffer.concat(chunks).toString('utf8'); try { resolve({ status: res.statusCode, json: txt ? JSON.parse(txt) : {} }); } catch { resolve({ status: res.statusCode, json: {} }); } }); });
+                req.on('error', reject); if (payload) req.write(payload); req.end();
+              });
+            }
+            function pick(re, text) { const m = text.match(re); return m ? m[1].trim() : ''; }
+            const url = pick(/URL:\s*(https?:[^\n\r]+)/i, body);
+            let desired = pick(/SLUG:\s*([A-Za-z0-9-_]+)/i, body);
+            const allowFallbackFlag = pick(/ALLOW_RANDOM_FALLBACK:\s*(true|false)/i, body).toLowerCase();
+            const allowFallback = allowFallbackFlag === 'true';
+            if (!url || !desired) { throw new Error('Approved reserved requires URL and SLUG'); }
+            const dataPath = path.join(process.cwd(), 'data', 'links.json');
+            const banPath = path.join(process.cwd(), 'data', 'banned.json');
+            const state = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+            const ban = fs.existsSync(banPath) ? JSON.parse(fs.readFileSync(banPath, 'utf8')) : { urls: [], hosts: [] };
+            const base62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            const exclude = new Set(['O','0','I','l']);
+            const alphabet = [...base62].filter(ch => !exclude.has(ch)).join('');
+            function genSlug(len) { let s = ''; const bytes = crypto.randomBytes(len); for (let i = 0; i < len; i++) s += alphabet[bytes[i] % alphabet.length]; return s; }
+            function isValidSlug(s) { return /^[a-zA-Z0-9-_]+$/.test(s); }
+            const links = Array.isArray(state.links) ? state.links : [];
+            function isBanned(u) {
+              try { const x = new URL(u); const host = String(x.hostname || '').toLowerCase(); const urls = Array.isArray(ban.urls) ? ban.urls : []; const hosts = Array.isArray(ban.hosts) ? ban.hosts : []; if (urls.includes(u)) return true; return hosts.some(h => h && host.endsWith(String(h).toLowerCase())); } catch { return false; }
+            }
+            if (isBanned(url)) throw new Error('URL/host banned');
+            const duplicate = links.some(e => String(e.url) === String(url));
+            if (duplicate) throw new Error('Duplicate URL');
+            const existing = new Set(links.map(e => String(e.slug)));
+            let slug = desired;
+            if (!isValidSlug(slug)) throw new Error('Invalid slug format');
+            if (existing.has(slug)) { if (allowFallback) { let attempt = 0; do { slug = genSlug(6); attempt++; } while (existing.has(slug) && attempt < 1000); } else { throw new Error('Slug already exists'); } }
+            links.push({ slug, url, reserved: true, createdAt: new Date().toISOString(), createdBy: process.env.ACTOR || 'bot', issueNumber: Number(issueNumber) });
+            state.links = links;
+            fs.writeFileSync(dataPath, JSON.stringify(state, null, 2) + '\n');
+            console.log('[approve:comment] added:', slug, '->', url);
+            const domPath = path.join(process.cwd(), 'data', 'domain.json');
+            let host = '';
+            try { if (fs.existsSync(domPath)) { const dj = JSON.parse(fs.readFileSync(domPath, 'utf8')); host = String((dj && dj.domain) || '').trim(); } } catch {}
+            if (!host) {
+              try {
+                const ref = process.env.PAGES_BRANCH || 'pages';
+                const r = await gh('GET', `/repos/${owner}/${repo}/contents/CNAME?ref=${encodeURIComponent(ref)}`);
+                if (r && r.json && r.json.content) {
+                  const raw = Buffer.from(String(r.json.content), 'base64').toString('utf8').trim();
+                  if (raw) host = raw;
+                }
+              } catch {}
+            }
+            if (!host) { host = `${owner}.github.io`; }
+            const shortUrl = `https://${host.replace(/\/$/, '')}/${slug}`;
+            await gh('POST', `/repos/${owner}/${repo}/issues/${issueNumber}/comments`, { body: `Approved by @${process.env.ACTOR}. Created: ${shortUrl} → ${url}` });
+            await gh('PATCH', `/repos/${owner}/${repo}/issues/${issueNumber}`, { state: 'closed' });
+          })().catch(err => { console.error(err); process.exit(1); });
+          NODE
+
+      - name: Commit and push (fast path, no deploy)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p data
+          printf '{\n  "repo": "%s"\n}\n' "$GITHUB_REPOSITORY" > data/repo.json
+          git add data/links.json data/repo.json
+          git commit -m "chore(shortlink): approved via comment [skip ci]" || echo "No changes"
+          git fetch origin "$PAGES_BRANCH" || true
+          git pull --rebase --autostash origin "$PAGES_BRANCH" || true
+          for i in 1 2 3; do
+            git push -u origin "$PAGES_BRANCH" && break || {
+              echo "push failed, attempting rebase retry $i";
+              git fetch origin "$PAGES_BRANCH" || true;
+              git pull --rebase --autostash origin "$PAGES_BRANCH" || true;
+            };
+          done
+
+  remove_on_issue_delete:
+    if: github.event_name == 'issues' && github.event.action == 'deleted'
+    runs-on: ubuntu-latest
+    env:
+      PAGES_BRANCH: pages
+      DATA_BRANCH: pages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Switch to pages branch
+        run: |
+          git fetch origin || true
+          git checkout -B "$PAGES_BRANCH" || git checkout -B "$PAGES_BRANCH"
+          git fetch origin "$PAGES_BRANCH" || true
+          git rev-parse --verify origin/"$PAGES_BRANCH" >/dev/null 2>&1 && git reset --hard origin/"$PAGES_BRANCH" || true
+      - name: Remove links by issue number
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const issueNumber = Number(process.env.ISSUE_NUMBER || '0');
+          const dataPath = path.join(process.cwd(), 'data', 'links.json');
+          const state = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+          const before = Array.isArray(state.links) ? state.links : [];
+          const after = before.filter(e => Number(e.issueNumber || 0) !== issueNumber);
+          if (after.length === before.length) { console.log('[cleanup] no entries for issue:', issueNumber); process.exit(0); }
+          state.links = after;
+          fs.writeFileSync(dataPath, JSON.stringify(state, null, 2) + '\n');
+          console.log('[cleanup] removed entries for issue:', issueNumber);
+          NODE
+      - name: Commit and push (fast path, no deploy)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/links.json
+          git commit -m "chore(shortlink): remove links for deleted issue [skip ci]" || echo "No changes"
+          git fetch origin "$PAGES_BRANCH" || true
+          git pull --rebase --autostash origin "$PAGES_BRANCH" || true
+          for i in 1 2 3; do
+            git push -u origin "$PAGES_BRANCH" && break || {
+              echo "push failed, attempting rebase retry $i";
+              git fetch origin "$PAGES_BRANCH" || true;
+              git pull --rebase --autostash origin "$PAGES_BRANCH" || true;
+            };
+          done
+
+  cleanup_by_issue:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cleanup_issue_number != '' }}
+    runs-on: ubuntu-latest
+    env:
+      PAGES_BRANCH: pages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Switch to pages branch
+        run: |
+          git fetch origin || true
+          git checkout -B "$PAGES_BRANCH" || git checkout -B "$PAGES_BRANCH"
+          git fetch origin "$PAGES_BRANCH" || true
+          git rev-parse --verify origin/"$PAGES_BRANCH" >/dev/null 2>&1 && git reset --hard origin/"$PAGES_BRANCH" || true
+      - name: Remove links by issue number (manual)
+        env:
+          ISSUE_NUMBER: ${{ github.event.inputs.cleanup_issue_number }}
+        shell: bash
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const issueNumber = Number(process.env.ISSUE_NUMBER || '0');
+          const dataPath = path.join(process.cwd(), 'data', 'links.json');
+          const state = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+          const before = Array.isArray(state.links) ? state.links : [];
+          const after = before.filter(e => Number(e.issueNumber || 0) !== issueNumber);
+          if (after.length === before.length) { console.log('[cleanup:manual] no entries for issue:', issueNumber); process.exit(0); }
+          state.links = after;
+          fs.writeFileSync(dataPath, JSON.stringify(state, null, 2) + '\n');
+          console.log('[cleanup:manual] removed entries for issue:', issueNumber);
+          NODE
+      - name: Commit and push (fast path, no deploy)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/links.json
+          git commit -m "chore(shortlink): manual cleanup for issue [skip ci]" || echo "No changes"
+          git fetch origin "$PAGES_BRANCH" || true
+          git pull --rebase --autostash origin "$PAGES_BRANCH" || true
+          for i in 1 2 3; do
+            git push -u origin "$PAGES_BRANCH" && break || {
+              echo "push failed, attempting rebase retry $i";
+              git fetch origin "$PAGES_BRANCH" || true;
+              git pull --rebase --autostash origin "$PAGES_BRANCH" || true;
+            };
+          done
