@@ -1,5 +1,13 @@
 {
   "version": 1,
   "links": [
+    {
+      "slug": "kv",
+      "url": "https://github.com/Ba-koD/keyviewer/releases/latest",
+      "reserved": true,
+      "createdAt": "2025-11-20T08:29:02.069Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 1
+    }
   ]
 }
