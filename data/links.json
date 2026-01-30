@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "ef",
+      "url": "https://arktrait.onrender.com/",
+      "reserved": true,
+      "createdAt": "2026-01-30T08:59:49.517Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 2
+    },
+    {
       "slug": "kv",
       "url": "https://github.com/Ba-koD/keyviewer/releases/latest",
       "reserved": true,
