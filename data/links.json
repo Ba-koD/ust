@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "ef1",
+      "url": "https://travous.tistory.com/2647",
+      "reserved": true,
+      "createdAt": "2026-01-31T11:22:05.059Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 3
+    },
+    {
       "slug": "ef",
       "url": "https://arktrait.onrender.com/",
       "reserved": true,
