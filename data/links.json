@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "ef2",
+      "url": "https://arca.live/b/akendfield/160902699",
+      "reserved": true,
+      "createdAt": "2026-01-31T13:50:09.051Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 4
+    },
+    {
       "slug": "ef1",
       "url": "https://travous.tistory.com/2647",
       "reserved": true,
