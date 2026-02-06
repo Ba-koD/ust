@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "ef3",
+      "url": "https://arca.live/b/akendfield/161118068",
+      "reserved": true,
+      "createdAt": "2026-02-06T18:38:21.980Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 5
+    },
+    {
       "slug": "ef2",
       "url": "https://arca.live/b/akendfield/160902699",
       "reserved": true,
