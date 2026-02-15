@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "cp",
+      "url": "https://github.com/Ba-koD/cb_patcher/releases/latest",
+      "reserved": true,
+      "createdAt": "2026-02-15T17:22:30.090Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 7
+    },
+    {
       "slug": "ef4",
       "url": "https://pbs.twimg.com/media/G_oos_zbMAAXAQy?format=jpg&name=medium",
       "reserved": true,
