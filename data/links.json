@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "pay",
+      "url": "https://topup.gryphline.com/endfield",
+      "reserved": true,
+      "createdAt": "2026-03-03T17:29:46.783Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 10
+    },
+    {
       "slug": "daily",
       "url": "https://game.skport.com/endfield/sign-in",
       "reserved": true,
