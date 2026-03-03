@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "daily",
+      "url": "https://game.skport.com/endfield/sign-in",
+      "reserved": true,
+      "createdAt": "2026-03-03T17:25:16.035Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 9
+    },
+    {
       "slug": "hero",
       "url": "https://blogger.googleusercontent.com/img/a/AVvXsEgwXstax0MYDlwRqdYaIw96AMxyJs1hRmdTieqNbEVXEy5-GBp3kFYYVDQg4QIXuiOiaW-sSG_du-66OZC5eGL3tARi8HsCjihhf23uHBj0-SJ4MT7uhITMTAeyNkfWWz3fWKrTZnHSw6Sr6rX_4AoXuHg-uJByg_yY0zVEq7gdt3_lLMWP2ITZgniREw=s16000",
       "reserved": true,
