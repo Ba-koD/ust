@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "maple",
+      "url": "https://ba-kod.github.io/matimer/",
+      "reserved": true,
+      "createdAt": "2026-04-20T03:39:14.386Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 12
+    },
+    {
       "slug": "mul",
       "url": "https://arca.live/b/akendfield/161465363",
       "reserved": true,
