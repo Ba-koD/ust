@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "imm",
+      "url": "https://github.com/Ba-koD/cb_patcher/releases/latest",
+      "reserved": true,
+      "createdAt": "2026-05-17T11:04:20.141Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 14
+    },
+    {
       "slug": "maple",
       "url": "https://ba-kod.github.io/matimer/",
       "reserved": true,
