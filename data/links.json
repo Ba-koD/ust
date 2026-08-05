@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "claude-test",
+      "url": "https://example.com/claude-test",
+      "reserved": true,
+      "createdAt": "2026-08-05T13:14:16.742Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 17
+    },
+    {
       "slug": "yt",
       "url": "https://ba-kod.github.io/yt-download/",
       "reserved": true,
