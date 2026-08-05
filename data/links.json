@@ -3,11 +3,13 @@
   "links": [
     {
       "slug": "claude-test",
-      "url": "https://example.com/claude-test",
+      "url": "https://example.com/claude-test-v2",
       "reserved": true,
       "createdAt": "2026-08-05T13:14:16.742Z",
       "createdBy": "Ba-koD",
-      "issueNumber": 17
+      "issueNumber": 17,
+      "updatedAt": "2026-08-05T13:16:14.913Z",
+      "updatedBy": "Ba-koD"
     },
     {
       "slug": "yt",
