@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "yt",
+      "url": "https://ba-kod.github.io/yt-download/",
+      "reserved": true,
+      "createdAt": "2026-08-05T13:00:01.698Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 16
+    },
+    {
       "slug": "imm",
       "url": "https://github.com/Ba-koD/cb_patcher/releases/latest",
       "reserved": true,
