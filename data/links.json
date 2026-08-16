@@ -2,6 +2,14 @@
   "version": 1,
   "links": [
     {
+      "slug": "match3",
+      "url": "https://ba-kod.github.io/match3/",
+      "reserved": true,
+      "createdAt": "2026-08-16T18:46:05.586Z",
+      "createdBy": "Ba-koD",
+      "issueNumber": 21
+    },
+    {
       "slug": "yt",
       "url": "https://ba-kod.github.io/yt-download/",
       "reserved": true,
